@@ -15,6 +15,8 @@ declare global { interface Document { modelContext?: { registerTool: (tool: Tool
 
 const SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL", "6XL", "7XL", "FREE SIZE", "UNKNOWN"];
 const PDF_POINTS_PER_INCH = 72;
+// Crop bounds of the Meesho A4 layout, measured from the 4 × 4 reference.
+const MEESHO_A4_CROP = { left: 0.76 / 595, bottom: 224.69 / 842, right: 586.91 / 595, top: 836.96 / 842 };
 const FLIPKART_PAGE_WIDTH = 216;
 const FLIPKART_PAGE_HEIGHT = 360;
 const FLIPKART_CROP = { left: 190 / 595, bottom: 460 / 842, right: 406 / 595, top: 820 / 842 };
@@ -202,10 +204,16 @@ export default function Home() {
         for (const row of sortedRows) {
           const source = sources[row.fileIndex].getPage(row.pageNumber - 1);
           const crop = source.getCropBox();
-          const embedded = await output.embedPage(source, {
-            left: crop.x, bottom: crop.y, right: crop.x + crop.width, top: crop.y + crop.height,
-          });
           const rotation = ((source.getRotation().angle % 360) + 360) % 360;
+          const cropToReference = meeshoPageSize === "4x4" && rotation === 0
+            && Math.abs(crop.width - 595) < 2 && Math.abs(crop.height - 842) < 2;
+          const bounds = cropToReference ? MEESHO_A4_CROP : { left: 0, bottom: 0, right: 1, top: 1 };
+          const embedded = await output.embedPage(source, {
+            left: crop.x + crop.width * bounds.left,
+            bottom: crop.y + crop.height * bounds.bottom,
+            right: crop.x + crop.width * bounds.right,
+            top: crop.y + crop.height * bounds.top,
+          });
           const sideways = rotation === 90 || rotation === 270;
           const visibleWidth = sideways ? embedded.height : embedded.width;
           const visibleHeight = sideways ? embedded.width : embedded.height;
