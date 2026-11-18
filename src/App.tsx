@@ -1,18 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PDFDocument, StandardFonts, rgb, type PDFPage } from "pdf-lib";
+import { PDFDocument, StandardFonts, degrees, rgb, type PDFPage } from "pdf-lib";
 import * as XLSX from "xlsx";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import { ArrowDownToLine, CalendarDays, Check, FileSpreadsheet, FileText, LoaderCircle, LockKeyhole, PackageCheck, RefreshCcw, ShieldCheck, Sparkles, UploadCloud } from "lucide-react";
 
 type Placement = "bottom" | "right";
+type MeeshoPageSize = "original" | "4x4" | "4x6";
 type Marketplace = "meesho" | "flipkart";
 type LabelRow = { originalIndex: number; fileIndex: number; pageNumber: number; size: string; sku: string };
 type ToolRegistration = { name: string; title?: string; description: string; inputSchema: Record<string, unknown>; annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean }; execute: (input: unknown) => unknown | Promise<unknown> };
 declare global { interface Document { modelContext?: { registerTool: (tool: ToolRegistration, options?: { signal?: AbortSignal }) => void | Promise<void> } } }
 
 const SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL", "6XL", "7XL", "FREE SIZE", "UNKNOWN"];
+const PDF_POINTS_PER_INCH = 72;
 const FLIPKART_PAGE_WIDTH = 216;
 const FLIPKART_PAGE_HEIGHT = 360;
 const FLIPKART_CROP = { left: 190 / 595, bottom: 460 / 842, right: 406 / 595, top: 820 / 842 };
@@ -91,6 +93,7 @@ export default function Home() {
   const [rows, setRows] = useState<LabelRow[]>([]);
   const [status, setStatus] = useState<"idle" | "reading" | "ready" | "exporting" | "error">("idle");
   const [message, setMessage] = useState("");
+  const [meeshoPageSize, setMeeshoPageSize] = useState<MeeshoPageSize>("original");
   const [placement, setPlacement] = useState<Placement>("bottom");
   const [dateText, setDateText] = useState(indiaDate);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -186,6 +189,44 @@ export default function Home() {
           page.drawPage(embedded, { x: 0, y: 0, width: FLIPKART_PAGE_WIDTH, height: FLIPKART_PAGE_HEIGHT });
         }
         saveBlob(await output.save(), `Flipkart_Labels_3x5_Size_SKU_Sorted_${dateText}.pdf`, "application/pdf");
+      } else if (meeshoPageSize !== "original") {
+        const width = 4 * PDF_POINTS_PER_INCH;
+        const height = (meeshoPageSize === "4x4" ? 4 : 6) * PDF_POINTS_PER_INCH;
+        const font = await output.embedFont(StandardFonts.HelveticaBold);
+        const fontSize = 14;
+        const dateWidth = font.widthOfTextAtSize(dateText, fontSize);
+        const rightDate = placement === "right";
+        const labelWidth = rightDate ? width - dateWidth - 16 : width;
+        const dateBand = rightDate ? 0 : 24;
+
+        for (const row of sortedRows) {
+          const source = sources[row.fileIndex].getPage(row.pageNumber - 1);
+          const crop = source.getCropBox();
+          const embedded = await output.embedPage(source, {
+            left: crop.x, bottom: crop.y, right: crop.x + crop.width, top: crop.y + crop.height,
+          });
+          const rotation = ((source.getRotation().angle % 360) + 360) % 360;
+          const sideways = rotation === 90 || rotation === 270;
+          const visibleWidth = sideways ? embedded.height : embedded.width;
+          const visibleHeight = sideways ? embedded.width : embedded.height;
+          const scale = Math.min(labelWidth / visibleWidth, (height - dateBand) / visibleHeight);
+          const x = (labelWidth - visibleWidth * scale) / 2;
+          const y = dateBand + (height - dateBand - visibleHeight * scale) / 2;
+          const page = output.addPage([width, height]);
+          page.drawPage(embedded, {
+            x: x + (rotation === 180 || rotation === 270 ? visibleWidth * scale : 0),
+            y: y + (rotation === 90 || rotation === 180 ? visibleHeight * scale : 0),
+            xScale: scale,
+            yScale: scale,
+            rotate: degrees(-rotation),
+          });
+          page.drawText(dateText, {
+            x: rightDate ? labelWidth + 8 : (width - dateWidth) / 2,
+            y: rightDate ? (height - fontSize) / 2 : 7,
+            size: fontSize, font, color: rgb(0.08, 0.08, 0.1),
+          });
+        }
+        saveBlob(await output.save(), `Meesho_Labels_${meeshoPageSize}_Size_SKU_Sorted_${dateText}.pdf`, "application/pdf");
       } else {
         const font = await output.embedFont(StandardFonts.HelveticaBold);
         const copied = new Array<PDFPage>(rows.length);
@@ -249,11 +290,17 @@ export default function Home() {
           </div>
         </section>
         <aside className="space-y-5">
-          {marketplace === "meesho" ? <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_18px_55px_rgba(43,28,48,.07)] sm:p-6"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-fuchsia-700">Step 2</p><h2 className="mt-1 text-xl font-extrabold">Date position</h2></div><CalendarDays className="h-6 w-6 text-primary" /></div><label className="mt-5 block text-sm font-bold" htmlFor="dateText">Date shown on every label</label><input id="dateText" value={dateText} onChange={(e) => setDateText(e.target.value)} className="mt-2 h-12 w-full rounded-xl border border-border bg-white px-4 text-lg font-black tabular-nums focus:ring-4 focus:ring-fuchsia-100" />
+          {marketplace === "meesho" ? <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_18px_55px_rgba(43,28,48,.07)] sm:p-6"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-fuchsia-700">Step 2</p><h2 className="mt-1 text-xl font-extrabold">Label size and date</h2></div><CalendarDays className="h-6 w-6 text-primary" /></div><label className="mt-5 block text-sm font-bold" htmlFor="meeshoPageSize">PDF page size (width × height)</label>
+            <select id="meeshoPageSize" value={meeshoPageSize} disabled={isBusy} onChange={(e) => setMeeshoPageSize(e.currentTarget.value as MeeshoPageSize)} className="mt-2 h-12 w-full rounded-xl border border-border bg-white px-4 font-bold focus:ring-4 focus:ring-fuchsia-100">
+              <option value="original">Original PDF size</option>
+              <option value="4x4">4 × 4 inches</option>
+              <option value="4x6">4 × 6 inches</option>
+            </select>
+            <label className="mt-5 block text-sm font-bold" htmlFor="dateText">Date shown on every label</label><input id="dateText" value={dateText} onChange={(e) => setDateText(e.target.value)} className="mt-2 h-12 w-full rounded-xl border border-border bg-white px-4 text-lg font-black tabular-nums focus:ring-4 focus:ring-fuchsia-100" />
             <div className="mt-4 grid gap-2"><PositionButton active={placement === "bottom"} title="Bottom blank space" note="Centered below label details" onClick={() => setPlacement("bottom")} /><PositionButton active={placement === "right"} title="Right blank space" note="Centered next to product details" onClick={() => setPlacement("right")} /></div>
             <div className="mt-5 rounded-2xl bg-[#f8f5f8] p-4"><div className="relative mx-auto aspect-[3/2] max-w-[280px] overflow-hidden rounded-xl border border-zinc-300 bg-white shadow-sm"><div className="absolute left-4 top-4 h-4 w-2/5 rounded bg-zinc-900" /><div className="absolute left-4 top-11 space-y-2"><div className="h-2 w-24 rounded bg-zinc-300" /><div className="h-2 w-20 rounded bg-zinc-200" /><div className="h-2 w-28 rounded bg-zinc-200" /></div><div className="absolute right-4 top-4 grid h-14 w-14 grid-cols-4 gap-0.5 bg-zinc-900 p-1 opacity-85">{Array.from({ length: 16 }).map((_, i) => <span key={i} className={i % 3 === 0 ? "bg-white" : "bg-zinc-900"} />)}</div><div className={`absolute font-black tabular-nums ${placement === "bottom" ? "bottom-3 left-1/2 -translate-x-1/2" : "right-4 top-[58%] -translate-y-1/2"}`}>{dateText}</div></div><p className="mt-3 flex items-center justify-center gap-2 text-xs font-bold text-emerald-700"><ShieldCheck className="h-3.5 w-3.5" />Original label stays unchanged</p></div>
           </section> : <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_18px_55px_rgba(43,28,48,.07)] sm:p-6"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-fuchsia-700">Step 2</p><h2 className="mt-1 text-xl font-extrabold">3 × 5 label crop</h2></div><FileText className="h-6 w-6 text-primary" /></div><div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><p className="flex items-center gap-2 font-extrabold text-emerald-900"><Check className="h-4 w-4" />Flipkart label area detected</p><p className="mt-2 text-sm leading-6 text-emerald-800">The shipping label is cropped from the top of each A4 invoice page and exported at exactly 3 × 5 inches. The invoice section is removed.</p></div><div className="mt-4 grid grid-cols-2 gap-3"><div className="rounded-xl border border-border p-3 text-center"><p className="text-xl font-black">3 in</p><p className="text-xs font-bold uppercase text-muted-foreground">Width</p></div><div className="rounded-xl border border-border p-3 text-center"><p className="text-xl font-black">5 in</p><p className="text-xs font-bold uppercase text-muted-foreground">Height</p></div></div></section>}
-          <section className="rounded-[24px] bg-[#241826] p-5 text-white shadow-[0_18px_55px_rgba(43,28,48,.18)] sm:p-6"><p className="text-xs font-bold uppercase tracking-[.14em] text-fuchsia-200">Step 3</p><h2 className="mt-1 text-xl font-extrabold">Download files</h2><p className="mt-2 text-sm leading-6 text-zinc-300">Sort order: XXS → XS → S → M → L → XL → XXL → 3XL → 4XL → 5XL, then SKU.</p><div className="mt-5 grid gap-3"><button disabled={!rows.length || isBusy || !/^\d{2}-\d{2}-\d{4}$/.test(dateText)} onClick={() => void exportPdf()} className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-fuchsia-500 px-4 font-extrabold hover:bg-fuchsia-400 disabled:opacity-40">{status === "exporting" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowDownToLine className="h-4 w-4" />}Download {marketplace === "flipkart" ? "3×5 " : ""}combined sorted PDF</button><button disabled={!rows.length || isBusy} onClick={exportExcel} className="inline-flex h-12 items-center justify-center gap-2 rounded-xl border border-white/20 bg-white/10 px-4 font-extrabold hover:bg-white/15 disabled:opacity-40"><FileSpreadsheet className="h-4 w-4" />Download Excel picklist</button></div><div className="mt-5 grid grid-cols-3 divide-x divide-white/10 rounded-xl border border-white/10 bg-black/10 py-3 text-center text-xs font-bold text-zinc-300"><span>{marketplace === "flipkart" ? "3×5 crop" : "PDF preserved"}</span><span>Size totals</span><span>SKU count</span></div></section>
+          <section className="rounded-[24px] bg-[#241826] p-5 text-white shadow-[0_18px_55px_rgba(43,28,48,.18)] sm:p-6"><p className="text-xs font-bold uppercase tracking-[.14em] text-fuchsia-200">Step 3</p><h2 className="mt-1 text-xl font-extrabold">Download files</h2><p className="mt-2 text-sm leading-6 text-zinc-300">Sort order: XXS → XS → S → M → L → XL → XXL → 3XL → 4XL → 5XL, then SKU.</p><div className="mt-5 grid gap-3"><button disabled={!rows.length || isBusy || !/^\d{2}-\d{2}-\d{4}$/.test(dateText)} onClick={() => void exportPdf()} className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-fuchsia-500 px-4 font-extrabold hover:bg-fuchsia-400 disabled:opacity-40">{status === "exporting" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowDownToLine className="h-4 w-4" />}Download {marketplace === "flipkart" ? "3×5 " : meeshoPageSize === "original" ? "" : `${meeshoPageSize.replace("x", "×")} `}combined sorted PDF</button><button disabled={!rows.length || isBusy} onClick={exportExcel} className="inline-flex h-12 items-center justify-center gap-2 rounded-xl border border-white/20 bg-white/10 px-4 font-extrabold hover:bg-white/15 disabled:opacity-40"><FileSpreadsheet className="h-4 w-4" />Download Excel picklist</button></div><div className="mt-5 grid grid-cols-3 divide-x divide-white/10 rounded-xl border border-white/10 bg-black/10 py-3 text-center text-xs font-bold text-zinc-300"><span>{marketplace === "flipkart" ? "3×5 crop" : "PDF preserved"}</span><span>Size totals</span><span>SKU count</span></div></section>
         </aside>
       </div>
     </section>
